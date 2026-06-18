@@ -24,6 +24,10 @@ constexpr std::array requiredRayTracingExtensions{
     VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
 };
 
+constexpr std::array requiredSwapchainExtensions{
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+};
+
 template <typename T>
 T* appendPNext(T& value, void*& head) noexcept
 {
@@ -39,6 +43,7 @@ Device::Device(const Instance& instance, const DeviceConfig& config)
     const Candidate candidate = pickPhysicalDevice(instance, config);
     physicalDevice_ = candidate.physicalDevice;
     graphicsQueueFamily_ = candidate.queueFamilies.graphicsCompute;
+    presentQueueFamily_ = candidate.queueFamilies.present;
     properties_ = candidate.properties;
     memoryProperties_ = candidate.memoryProperties;
     rayTracingLimits_ = candidate.rayTracingLimits;
@@ -72,9 +77,19 @@ VkQueue Device::graphicsQueue() const noexcept
     return graphicsQueue_;
 }
 
+VkQueue Device::presentQueue() const noexcept
+{
+    return presentQueue_;
+}
+
 std::uint32_t Device::graphicsQueueFamily() const noexcept
 {
     return graphicsQueueFamily_;
+}
+
+std::uint32_t Device::presentQueueFamily() const noexcept
+{
+    return presentQueueFamily_;
 }
 
 const VkPhysicalDeviceProperties& Device::properties() const noexcept
@@ -138,9 +153,18 @@ Device::Candidate Device::pickPhysicalDevice(const Instance& instance, const Dev
         vkGetPhysicalDeviceProperties(physicalDevice, &properties);
         vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
 
-        auto queueFamilies = findQueueFamilies(physicalDevice);
+        auto queueFamilies = findQueueFamilies(physicalDevice, config.presentSurface);
         if (!queueFamilies.has_value()) {
             continue;
+        }
+
+        if (config.requireSwapchain) {
+            if (config.presentSurface == VK_NULL_HANDLE) {
+                throw std::invalid_argument("swapchain support requires a present surface");
+            }
+            if (!supportsExtensions(physicalDevice, std::span<const char* const>(requiredSwapchainExtensions))) {
+                continue;
+            }
         }
 
         RayTracingLimits limits{};
@@ -178,21 +202,49 @@ Device::Candidate Device::pickPhysicalDevice(const Instance& instance, const Dev
     return *best;
 }
 
-std::optional<QueueFamilySelection> Device::findQueueFamilies(VkPhysicalDevice physicalDevice) const
+std::optional<QueueFamilySelection> Device::findQueueFamilies(VkPhysicalDevice physicalDevice,
+                                                              VkSurfaceKHR presentSurface) const
 {
     std::uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
     std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
 
+    std::optional<std::uint32_t> graphicsCompute;
     for (std::uint32_t i = 0; i < queueFamilies.size(); ++i) {
         const VkQueueFlags flags = queueFamilies[i].queueFlags;
         if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0) {
-            return QueueFamilySelection{.graphicsCompute = i};
+            graphicsCompute = i;
+            break;
         }
     }
 
-    return std::nullopt;
+    if (!graphicsCompute.has_value()) {
+        return std::nullopt;
+    }
+
+    std::optional<std::uint32_t> present = graphicsCompute;
+    if (presentSurface != VK_NULL_HANDLE) {
+        present.reset();
+        for (std::uint32_t i = 0; i < queueFamilies.size(); ++i) {
+            VkBool32 supported = VK_FALSE;
+            check(vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, presentSurface, &supported),
+                  "vkGetPhysicalDeviceSurfaceSupportKHR");
+            if (supported == VK_TRUE) {
+                present = i;
+                break;
+            }
+        }
+    }
+
+    if (!present.has_value()) {
+        return std::nullopt;
+    }
+
+    return QueueFamilySelection{
+        .graphicsCompute = *graphicsCompute,
+        .present = *present,
+    };
 }
 
 bool Device::supportsExtensions(VkPhysicalDevice physicalDevice, std::span<const char* const> requiredExtensions) const
@@ -282,6 +334,9 @@ void Device::createLogicalDevice(const Candidate& candidate, const DeviceConfig&
     if (config.requireRayTracing) {
         extensions.assign(requiredRayTracingExtensions.begin(), requiredRayTracingExtensions.end());
     }
+    if (config.requireSwapchain) {
+        extensions.insert(extensions.end(), requiredSwapchainExtensions.begin(), requiredSwapchainExtensions.end());
+    }
 
     void* featureChain = nullptr;
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddress{
@@ -313,17 +368,29 @@ void Device::createLogicalDevice(const Candidate& candidate, const DeviceConfig&
         .pNext = featureChain,
     };
 
+    std::vector<VkDeviceQueueCreateInfo> queueInfos;
+    queueInfos.push_back(queueInfo);
+    if (candidate.queueFamilies.present != candidate.queueFamilies.graphicsCompute) {
+        queueInfos.push_back({
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = candidate.queueFamilies.present,
+            .queueCount = 1,
+            .pQueuePriorities = &queuePriority,
+        });
+    }
+
     const VkDeviceCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features,
-        .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &queueInfo,
+        .queueCreateInfoCount = static_cast<std::uint32_t>(queueInfos.size()),
+        .pQueueCreateInfos = queueInfos.data(),
         .enabledExtensionCount = static_cast<std::uint32_t>(extensions.size()),
         .ppEnabledExtensionNames = extensions.empty() ? nullptr : extensions.data(),
     };
 
     check(vkCreateDevice(candidate.physicalDevice, &createInfo, nullptr, &device_), "vkCreateDevice");
     vkGetDeviceQueue(device_, candidate.queueFamilies.graphicsCompute, 0, &graphicsQueue_);
+    vkGetDeviceQueue(device_, candidate.queueFamilies.present, 0, &presentQueue_);
 }
 
 void Device::loadRayTracingFunctions()

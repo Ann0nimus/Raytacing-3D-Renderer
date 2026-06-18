@@ -16,7 +16,9 @@ struct Vertex {
 };
 
 struct Material {
+    std::string name = "material";
     std::array<float, 3> baseColor{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
     float roughness = 0.5F;
     float metallic = 0.0F;
 };
@@ -48,6 +50,7 @@ struct Camera {
 };
 
 struct Scene {
+    std::string name = "Scene";
     std::vector<Vertex> vertices;
     std::vector<std::uint32_t> indices;
     std::vector<Material> materials;

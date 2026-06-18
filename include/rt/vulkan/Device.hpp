@@ -13,10 +13,13 @@ class Instance;
 
 struct QueueFamilySelection {
     std::uint32_t graphicsCompute = 0;
+    std::uint32_t present = 0;
 };
 
 struct DeviceConfig {
     bool requireRayTracing = true;
+    bool requireSwapchain = false;
+    VkSurfaceKHR presentSurface = VK_NULL_HANDLE;
     std::optional<std::string> preferredDeviceName;
 };
 
@@ -53,7 +56,9 @@ public:
     [[nodiscard]] VkPhysicalDevice physicalDevice() const noexcept;
     [[nodiscard]] VkDevice logicalDevice() const noexcept;
     [[nodiscard]] VkQueue graphicsQueue() const noexcept;
+    [[nodiscard]] VkQueue presentQueue() const noexcept;
     [[nodiscard]] std::uint32_t graphicsQueueFamily() const noexcept;
+    [[nodiscard]] std::uint32_t presentQueueFamily() const noexcept;
     [[nodiscard]] const VkPhysicalDeviceProperties& properties() const noexcept;
     [[nodiscard]] const RayTracingLimits& rayTracingLimits() const noexcept;
     [[nodiscard]] const RayTracingFunctions& rt() const noexcept;
@@ -74,7 +79,8 @@ private:
     };
 
     [[nodiscard]] Candidate pickPhysicalDevice(const Instance& instance, const DeviceConfig& config) const;
-    [[nodiscard]] std::optional<QueueFamilySelection> findQueueFamilies(VkPhysicalDevice physicalDevice) const;
+    [[nodiscard]] std::optional<QueueFamilySelection> findQueueFamilies(VkPhysicalDevice physicalDevice,
+                                                                        VkSurfaceKHR presentSurface) const;
     [[nodiscard]] bool supportsExtensions(VkPhysicalDevice physicalDevice,
                                           std::span<const char* const> requiredExtensions) const;
     [[nodiscard]] bool supportsRayTracingFeatures(VkPhysicalDevice physicalDevice,
@@ -85,7 +91,9 @@ private:
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;
+    VkQueue presentQueue_ = VK_NULL_HANDLE;
     std::uint32_t graphicsQueueFamily_ = 0;
+    std::uint32_t presentQueueFamily_ = 0;
     VkPhysicalDeviceProperties properties_{};
     VkPhysicalDeviceMemoryProperties memoryProperties_{};
     RayTracingLimits rayTracingLimits_{};
